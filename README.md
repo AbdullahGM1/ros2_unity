@@ -1,6 +1,13 @@
 # ros2_unity
 
-Stream ROS2 point cloud data from Ubuntu to Unity on Windows using **rosbridge_suite** over WebSocket.
+Stream ROS2 point cloud data from Ubuntu to Unity on Windows over WebSocket.
+
+Two bridge approaches are documented here — both have been tested and confirmed working on this machine with ROS2 Jazzy:
+
+| Approach | Port | Install method | Notes |
+|---|---|---|---|
+| [rosbridge_suite (built from source)](#approach-a--rosbridge-suite-built-from-source) | 9090 | `colcon build` in workspace | Required because the apt binary has a FastCDR 1.x vs 2.x ABI mismatch on Jazzy |
+| [foxglove-bridge](#approach-b--foxglove-bridge) | 8765 | `sudo apt install` | Single apt install, simpler setup |
 
 ---
 
@@ -12,7 +19,9 @@ Ubuntu (ROS2 Jazzy)                         Windows (Unity)
 ros2 bag play → /velodyne_points            ROS# library (WebSocket client)
          ↕                                           ↕
   rosbridge_websocket node              subscribes to /velodyne_points_throttled
-  (WebSocket server, port 9090)         parses PointCloud2 → renders in Unity
+  — or —                                parses PointCloud2 → renders in Unity
+  foxglove_bridge node
+  (WebSocket server)
          ↕
   topic_tools throttle
   (rate-limits to 2 Hz to reduce bandwidth)
@@ -20,16 +29,15 @@ ros2 bag play → /velodyne_points            ROS# library (WebSocket client)
 
 ---
 
-## Prerequisites
+## Common Prerequisites
 
-### Ubuntu side
+### Ubuntu
 
 ```bash
-sudo apt install ros-jazzy-rosbridge-suite
 sudo apt install ros-jazzy-topic-tools
 ```
 
-### Windows / Unity side
+### Windows / Unity
 
 - Unity 2021.3 LTS or newer
 - **ROS#** library — download the `.unitypackage` from the latest release:
@@ -37,43 +45,104 @@ sudo apt install ros-jazzy-topic-tools
 
 ---
 
-## Ubuntu Setup
+## Approach A — rosbridge_suite (built from source)
 
-### 1. Source ROS2
+### Why build from source?
+
+The apt package `ros-jazzy-rosbridge-suite` was compiled against FastCDR 1.x. ROS Jazzy ships
+FastCDR 2.x — the symbol `Cdr::serialize(unsigned int)` was removed in 2.x, causing a fatal
+symbol lookup error at launch. Building from source compiles against the FastCDR version
+actually installed on the system.
+
+### One-time build
 
 ```bash
+cd ~/projects/RMC_2.0/ros2_ws/src
+git clone https://github.com/RobotWebTools/rosbridge_suite.git
+cd ~/projects/RMC_2.0/ros2_ws
+colcon build --packages-select rosbridge_msgs rosbridge_library rosapi rosapi_msgs rosbridge_server --symlink-install
+```
+
+### Run
+
+```bash
+# Terminal 1 — source workspace and start bridge
 source /opt/ros/jazzy/setup.bash
 source ~/projects/RMC_2.0/ros2_ws/install/setup.bash
-```
-
-### 2. Start the rosbridge WebSocket server
-
-```bash
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+# WebSocket server starts on port 9090
 ```
 
-Default port is **9090**. The server will print:
-```
-[INFO] [rosbridge_websocket]: Rosbridge WebSocket server started on port 9090
-```
-
-### 3. Allow port 9090 through the Ubuntu firewall
+Allow through firewall (one-time):
 
 ```bash
 sudo ufw allow 9090/tcp
 ```
 
-### 4. Play the bag
+### Unity connection URL
+
+```
+ws://<ubuntu-ip>:9090
+```
+
+---
+
+## Approach B — foxglove-bridge
+
+### Install
 
 ```bash
+sudo apt install ros-jazzy-foxglove-bridge
+```
+
+### Run
+
+```bash
+# Terminal 1
+source /opt/ros/jazzy/setup.bash
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+# WebSocket server starts on port 8765
+```
+
+Allow through firewall (one-time):
+
+```bash
+sudo ufw allow 8765/tcp
+```
+
+### Unity connection URL
+
+```
+ws://<ubuntu-ip>:8765
+```
+
+---
+
+## Ubuntu — Bag Playback and Throttle (same for both approaches)
+
+### Find your Ubuntu LAN IP
+
+```bash
+ip addr show | grep "inet " | grep -v 127.0.0.1
+```
+
+Example: `inet 192.168.1.50/24` → IP is `192.168.1.50`
+
+### Play the bag
+
+```bash
+# Terminal 2
+source /opt/ros/jazzy/setup.bash
 ros2 bag play ~/projects/RMC_2.0/ros2_ws/src/ros2_point_cloud/ros2_bags/record_2025-03-19-09-26-37_0 --clock
 ```
 
-### 5. Throttle the point cloud topic (recommended)
+### Throttle the point cloud (recommended)
 
-Full VLP-16 at 10 Hz is heavy over WebSocket. Throttle to 2 Hz in a separate terminal:
+Full VLP-16 at 10 Hz is heavy over WebSocket. Throttle to 2 Hz:
 
 ```bash
+# Terminal 3
+source /opt/ros/jazzy/setup.bash
 ros2 run topic_tools throttle messages /velodyne_points 2.0 /velodyne_points_throttled
 ```
 
@@ -81,19 +150,7 @@ Unity subscribes to `/velodyne_points_throttled`. Increase the rate if your netw
 
 ---
 
-## Find Your Ubuntu LAN IP
-
-Unity needs to connect to your Ubuntu machine's IP address:
-
-```bash
-ip addr show | grep "inet " | grep -v 127.0.0.1
-```
-
-Example output: `inet 192.168.1.50/24` → IP is `192.168.1.50`
-
----
-
-## Unity Setup (Windows)
+## Unity Setup (Windows) — same for both approaches
 
 ### 1. Import ROS#
 
@@ -103,19 +160,20 @@ Example output: `inet 192.168.1.50/24` → IP is `192.168.1.50`
 
 ### 2. Configure the ROS connection
 
-1. In the Unity menu bar: **Robotics → ROS Settings** (if using Unity Robotics Hub)
-   — or — create a `RosConnector` GameObject:
-   - **GameObject → Create Empty**, name it `RosConnector`
-   - Add component: **RosConnector**
-   - Set **Ros Bridge Server Url** to `ws://192.168.1.50:9090` (replace with your Ubuntu IP)
-   - Set **Protocol** to `Web Socket Sharp`
+Create a `RosConnector` GameObject:
+
+1. **GameObject → Create Empty**, name it `RosConnector`
+2. Add component: **RosConnector**
+3. Set **Ros Bridge Server Url**:
+   - rosbridge: `ws://192.168.1.50:9090`
+   - foxglove:  `ws://192.168.1.50:8765`
+4. Set **Protocol** to `Web Socket Sharp`
 
 ### 3. Subscribe to the point cloud topic
 
 Create a new C# script `PointCloudSubscriber.cs` and attach it to a GameObject:
 
 ```csharp
-using System.Collections.Generic;
 using UnityEngine;
 using RosSharp.RosBridgeClient;
 using RosSharp.RosBridgeClient.MessageTypes.Sensor;
@@ -246,23 +304,22 @@ Unity.z =  ROS.x
 
 | Issue | Fix |
 |---|---|
-| Unity cannot connect to rosbridge | Check Ubuntu IP, port 9090 open (`sudo ufw allow 9090/tcp`), both on same LAN |
-| No points appear in Unity | Verify bag is playing and `/velodyne_points_throttled` is active: `ros2 topic hz /velodyne_points_throttled` |
+| `symbol lookup error: undefined symbol Cdr::serialize` | Do not use apt rosbridge — build from source (see Approach A) |
+| Unity cannot connect | Check Ubuntu IP, correct port open in firewall, both on same LAN |
+| No points appear in Unity | Verify bag is playing: `ros2 topic hz /velodyne_points_throttled` |
 | Point cloud appears rotated/flipped | Check coordinate frame conversion in `RenderPointCloud()` |
-| High latency / dropped frames | Reduce throttle rate further: change `2.0` to `1.0` Hz |
-| `PointCloud2` fields not found in ROS# | Ensure ROS# version matches — some older releases lack full sensor_msgs support |
-| rosbridge not found | `sudo apt install ros-jazzy-rosbridge-suite` |
+| High latency / dropped frames | Reduce throttle rate: change `2.0` to `1.0` Hz |
+| rosbridge launch not found after build | Run `source ~/projects/RMC_2.0/ros2_ws/install/setup.bash` first |
 | topic_tools not found | `sudo apt install ros-jazzy-topic-tools` |
 
 ---
 
-## Quick Start Checklist
-
-### Ubuntu terminals (run in order)
+## Quick Start — Approach A (rosbridge from source)
 
 ```bash
-# Terminal 1 — rosbridge server
+# Terminal 1 — bridge server
 source /opt/ros/jazzy/setup.bash
+source ~/projects/RMC_2.0/ros2_ws/install/setup.bash
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 
 # Terminal 2 — bag playback
@@ -274,8 +331,22 @@ source /opt/ros/jazzy/setup.bash
 ros2 run topic_tools throttle messages /velodyne_points 2.0 /velodyne_points_throttled
 ```
 
-### Unity (Windows)
+Unity URL: `ws://<ubuntu-ip>:9090`
 
-1. Set RosConnector URL to `ws://<ubuntu-ip>:9090`
-2. Press **Play**
-3. Point cloud should appear within 1–2 seconds
+## Quick Start — Approach B (foxglove-bridge)
+
+```bash
+# Terminal 1 — bridge server
+source /opt/ros/jazzy/setup.bash
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+
+# Terminal 2 — bag playback
+source /opt/ros/jazzy/setup.bash
+ros2 bag play ~/projects/RMC_2.0/ros2_ws/src/ros2_point_cloud/ros2_bags/record_2025-03-19-09-26-37_0 --clock
+
+# Terminal 3 — throttle
+source /opt/ros/jazzy/setup.bash
+ros2 run topic_tools throttle messages /velodyne_points 2.0 /velodyne_points_throttled
+```
+
+Unity URL: `ws://<ubuntu-ip>:8765`
